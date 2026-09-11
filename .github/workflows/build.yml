@@ -49,8 +49,8 @@ jobs:
           done
           docker exec redpanda rpk cluster info
 
-      - name: Install Kafka Python client
-        run: configure/venv/bin/python -m pip install kafka-python
+      - name: Install Kafka Python clients
+        run: configure/venv/bin/python -m pip install kafka-python confluent-kafka
 
       - name: Seed Kafka and smoke test extension
         env:
