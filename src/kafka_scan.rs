@@ -20,6 +20,60 @@ use std::{
 const KAFKA_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 
+// Tributary exposes these Kafka/librdkafka configuration keys as named
+// parameters. Keep this list aligned with TributaryConfigKeys().
+const TRIBUTARY_CONFIG_KEYS: &[&str] = &[
+    "bootstrap.servers",
+    "security.protocol",
+    "sasl.mechanism",
+    "sasl.username",
+    "sasl.password",
+    "ssl.ca.location",
+    "ssl.certificate.location",
+    "ssl.key.location",
+    "ssl.key.password",
+    "group.id",
+    "client.id",
+    "transactional.id",
+    "schema.registry.url",
+    "schema.registry.basic.auth.user.info",
+    "debug",
+    "sasl.oauthbearer.client.id",
+    "sasl.oauthbearer.client.secret",
+    "sasl.oauthbearer.method",
+    "sasl.oauthbearer.token.endpoint.url",
+    // Common librdkafka consumer properties. Tributary derives its full
+    // parameter list from librdkafka; these cover the consumer controls most
+    // commonly used with tributary_scan_topic.
+    "auto.offset.reset",
+    "enable.auto.commit",
+    "enable.auto.offset.store",
+    "enable.partition.eof",
+    "fetch.min.bytes",
+    "fetch.wait.max.ms",
+    "fetch.max.bytes",
+    "max.partition.fetch.bytes",
+    "max.poll.interval.ms",
+    "session.timeout.ms",
+    "heartbeat.interval.ms",
+    "socket.timeout.ms",
+    "socket.connection.setup.timeout.ms",
+    "socket.keepalive.enable",
+    "connections.max.idle.ms",
+    "receive.message.max.bytes",
+    "queued.min.messages",
+    "queued.max.messages.kbytes",
+    "fetch.error.backoff.ms",
+    "retry.backoff.ms",
+    "retry.backoff.max.ms",
+    "reconnect.backoff.ms",
+    "reconnect.backoff.max.ms",
+    "allow.auto.create.topics",
+    "partition.assignment.strategy",
+    "check.crcs",
+    "isolation.level",
+];
+
 #[derive(Debug)]
 struct PartitionSnapshot {
     high: i64,
@@ -28,7 +82,7 @@ struct PartitionSnapshot {
 #[derive(Debug)]
 pub struct KafkaScanBind {
     topic: String,
-    bootstrap_servers: String,
+    config: HashMap<String, String>,
 }
 
 pub struct KafkaScanInit {
@@ -71,23 +125,38 @@ impl VTab for KafkaScan {
         ]);
         bind.add_result_column("headers", LogicalTypeHandle::list(&header_struct));
 
-        if bind.get_parameter_count() != 2 {
-            return Err("tributary_scan_topic requires exactly 2 arguments: topic, bootstrap_servers".into());
+        if bind.get_parameter_count() != 1 {
+            return Err(
+                "tributary_scan_topic requires one positional argument: topic; Kafka settings use named parameters"
+                    .into(),
+            );
         }
 
         let topic = bind.get_parameter(0).to_string();
-        let bootstrap_servers = bind.get_parameter(1).to_string();
         if topic.is_empty() {
             return Err("topic must not be empty".into());
         }
-        if bootstrap_servers.is_empty() {
-            return Err("bootstrap_servers must not be empty".into());
+
+        let mut config = HashMap::new();
+        for &key in TRIBUTARY_CONFIG_KEYS {
+            if let Some(value) = bind.get_named_parameter(key) {
+                config.insert(key.to_owned(), value.to_string());
+            }
         }
 
-        Ok(KafkaScanBind {
-            topic,
-            bootstrap_servers,
-        })
+        if !config.contains_key("bootstrap.servers") {
+            return Err("tributary_scan_topic requires named parameter \"bootstrap.servers\"".into());
+        }
+
+        if config
+            .get("bootstrap.servers")
+            .map(String::is_empty)
+            .unwrap_or(true)
+        {
+            return Err("bootstrap.servers must not be empty".into());
+        }
+
+        Ok(KafkaScanBind { topic, config })
     }
 
     fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
@@ -109,7 +178,7 @@ impl VTab for KafkaScan {
             .map_err(|_| "Kafka scanner state mutex was poisoned")?;
 
         if guard.is_none() {
-            *guard = Some(KafkaScanState::new(&bind.topic, &bind.bootstrap_servers)?);
+            *guard = Some(KafkaScanState::new(&bind.topic, &bind.config)?);
         }
 
         let state = guard.as_mut().expect("state initialized above");
@@ -127,19 +196,34 @@ impl VTab for KafkaScan {
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeId::Varchar.into(), LogicalTypeId::Varchar.into()])
+        Some(vec![LogicalTypeId::Varchar.into()])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(
+            TRIBUTARY_CONFIG_KEYS
+                .iter()
+                .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into()))
+                .collect(),
+        )
     }
 }
 
 impl KafkaScanState {
-    fn new(topic: &str, bootstrap_servers: &str) -> Result<Self, Box<dyn Error>> {
-        let consumer: BaseConsumer = ClientConfig::new()
-            .set("bootstrap.servers", bootstrap_servers)
-            .set("group.id", "tributary-rs-scan")
+    fn new(topic: &str, config: &HashMap<String, String>) -> Result<Self, Box<dyn Error>> {
+        let mut client_config = ClientConfig::new();
+        for (key, value) in config {
+            client_config.set(key, value);
+        }
+
+        // Preserve Tributary's scan behavior where these are enforced by the
+        // table function itself rather than left to caller configuration.
+        client_config
             .set("enable.auto.commit", "false")
             .set("enable.partition.eof", "true")
-            .set("auto.offset.reset", "earliest")
-            .create()?;
+            .set("auto.offset.reset", "earliest");
+
+        let consumer: BaseConsumer = client_config.create()?;
 
         let metadata = consumer.fetch_metadata(Some(topic), KAFKA_TIMEOUT)?;
         let metadata_topic = metadata
