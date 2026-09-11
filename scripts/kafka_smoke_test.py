@@ -1,8 +1,8 @@
 import os
 import time
 
-from kafka import KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
+from confluent_kafka import Producer
 import duckdb
 
 BROKERS = "127.0.0.1:9092"
@@ -32,17 +32,16 @@ except Exception as exc:
 finally:
     admin.close()
 
-producer = KafkaProducer(bootstrap_servers=BROKERS)
+producer = Producer({"bootstrap.servers": BROKERS})
 for i in range(3):
-    future = producer.send(
+    producer.produce(
         TOPIC,
         key=f"key-{i}".encode(),
         value=f"payload-{i}".encode(),
         headers=[("trace-id", f"trace-{i}".encode()), ("trace-id", None)],
     )
-    future.get(timeout=10)
-producer.flush()
-producer.close()
+    producer.poll(0)
+producer.flush(10)
 
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 con.execute(f"LOAD '{EXTENSION}'")
