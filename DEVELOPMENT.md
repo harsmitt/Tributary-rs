@@ -10,7 +10,7 @@ This repository is a pure-Rust reimplementation of the core Kafka scan path from
 | duckdb-rs | ~1.10505.x |
 | Rust | stable |
 | rdkafka | 0.39.0 |
-| librdkafka | built from the rdkafka crate with `cmake-build` |
+| librdkafka | built from the rdkafka crate with `cmake-build` and `ssl` |
 
 The Rust DuckDB template uses the unstable DuckDB C API because duckdb-rs currently needs it for loadable extensions. The resulting extension is therefore tied to the targeted DuckDB release and must be rebuilt when the DuckDB target changes.
 
@@ -28,13 +28,16 @@ Required local tools:
 - Python 3 + `venv`
 - Rust/Cargo
 - CMake and a native C/C++ toolchain for librdkafka
+- OpenSSL development headers/libraries for Kafka TLS (`libssl-dev` on Debian/Ubuntu)
 
 On Debian/Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git make cmake build-essential python3 python3-venv
+sudo apt-get install -y git make cmake build-essential python3 python3-venv libssl-dev
 ```
+
+The `rdkafka` dependency explicitly enables its `ssl` feature. Without that feature, librdkafka is compiled without OpenSSL and settings such as `ssl.key.location`, `ssl.certificate.location`, and `ssl.ca.location` fail at runtime with an `OpenSSL not available at build time` error. The `ssl` feature uses the system OpenSSL installation; `ssl-vendored` is an alternative if a self-contained OpenSSL build is preferred. citehttps://docs.rs/crate/rdkafka/0.39.0
 
 ## Build
 
@@ -218,6 +221,8 @@ Do not mix DuckDB target versions, duckdb-rs versions, and CI-tool versions. The
 
 The extension builds librdkafka from the crate's pinned source rather than requiring a matching system `librdkafka` shared library. This makes CI and release artifacts more reproducible and avoids a common corporate-machine failure mode where the installed librdkafka version differs from the Rust crate's expected ABI.
 
+The build also enables `rdkafka`'s `ssl` feature so the bundled librdkafka is compiled with OpenSSL support. The `ssl` feature uses system OpenSSL; on Debian/Ubuntu install `libssl-dev`. If a build environment cannot provide system OpenSSL, `ssl-vendored` can be used instead to build OpenSSL from the vendored crate sources. citehttps://docs.rs/crate/rdkafka-sys/4.10.0+2.12.1
+
 If your environment requires a system librdkafka, change the Cargo feature to `dynamic-linking` and ensure the installed library exactly matches the version expected by `rdkafka-sys`.
 
 ## Corporate proxy/build troubleshooting
@@ -226,7 +231,7 @@ If dependency downloads fail behind a proxy, configure Cargo and Git to use the 
 
 For DuckDB itself, duckdb-rs can also use a pre-existing DuckDB library when configured appropriately; do not add the `bundled` feature to this loadable-extension target unless you intentionally want to build another copy of DuckDB.
 
-For librdkafka, the current configuration is self-contained through `cmake-build`, so `pkg-config` is not required for librdkafka discovery.
+For librdkafka, the current configuration is self-contained through `cmake-build`, so `pkg-config` is not required for librdkafka discovery. OpenSSL is the exception: the current `ssl` feature expects system OpenSSL development files at build time.
 
 ## Porting checklist
 
