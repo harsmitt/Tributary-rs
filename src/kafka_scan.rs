@@ -93,8 +93,6 @@ impl VTab for KafkaScan {
     }
 
     fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        // Keep the first implementation deliberately single-threaded. Kafka
-        // partitions can be parallelized later without changing the SQL API.
         init.set_max_threads(1);
         Ok(KafkaScanInit {
             state: Mutex::new(None),
@@ -312,7 +310,7 @@ fn write_rows(output: &mut DataChunkHandle, rows: &[Row]) -> Result<(), Box<dyn 
                 }
             }
         }
-        unsafe { list.set_child(&child) };
+        list.set_len(count);
     }
 
     Ok(())
