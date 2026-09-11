@@ -12,4 +12,8 @@ strip = true
 
 [dependencies]
 duckdb = { version = "~1.10505.0", features = ["loadable-extension", "vtab"] }
-rdkafka = { version = "0.39.0", default-features = false, features = ["cmake-build"] }
+rdkafka = {
+    version = "0.39.0",
+    default-features = false,
+    features = ["cmake-build", "ssl"],
+}
