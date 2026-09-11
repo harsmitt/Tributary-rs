@@ -20,20 +20,18 @@ use std::{
 const KAFKA_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PartitionSnapshot {
-    partition: i32,
-    low: i64,
     high: i64,
 }
 
 #[derive(Debug)]
-struct KafkaScanBind {
+pub struct KafkaScanBind {
     topic: String,
     bootstrap_servers: String,
 }
 
-struct KafkaScanInit {
+pub struct KafkaScanInit {
     state: Mutex<Option<KafkaScanState>>,
 }
 
@@ -157,14 +155,7 @@ impl KafkaScanState {
             let partition_id = partition.id();
             let (low, high) = consumer.fetch_watermarks(topic, partition_id, KAFKA_TIMEOUT)?;
             if low < high {
-                snapshots.insert(
-                    partition_id,
-                    PartitionSnapshot {
-                        partition: partition_id,
-                        low,
-                        high,
-                    },
-                );
+                snapshots.insert(partition_id, PartitionSnapshot { high });
                 assignment.add_partition_offset(topic, partition_id, Offset::Offset(low))?;
             }
         }
@@ -239,7 +230,7 @@ fn write_rows(output: &mut DataChunkHandle, rows: &[Row]) -> Result<(), Box<dyn 
     let count = rows.len();
 
     {
-        let mut vector = output.flat_vector(0);
+        let vector = output.flat_vector(0);
         for (i, row) in rows.iter().enumerate() {
             vector.insert(i, row.topic.as_str());
         }
@@ -282,7 +273,7 @@ fn write_rows(output: &mut DataChunkHandle, rows: &[Row]) -> Result<(), Box<dyn 
     }
 
     {
-        let mut list = output.list_vector(5);
+        let list = output.list_vector(5);
         let total_headers: usize = rows.iter().map(|row| row.headers.len()).sum();
         let mut offset = 0usize;
         for (i, row) in rows.iter().enumerate() {
@@ -290,9 +281,9 @@ fn write_rows(output: &mut DataChunkHandle, rows: &[Row]) -> Result<(), Box<dyn 
             offset += row.headers.len();
         }
 
-        let mut child = list.struct_child(total_headers);
+        let child = list.struct_child(total_headers);
         {
-            let mut keys = child.child(0, total_headers);
+            let keys = child.child(0, total_headers);
             for (i, (key, _)) in rows.iter().flat_map(|r| r.headers.iter()).enumerate() {
                 keys.insert(i, key.as_str());
             }
