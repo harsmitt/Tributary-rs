@@ -42,9 +42,6 @@ const TRIBUTARY_CONFIG_KEYS: &[&str] = &[
     "sasl.oauthbearer.client.secret",
     "sasl.oauthbearer.method",
     "sasl.oauthbearer.token.endpoint.url",
-    // Common librdkafka consumer properties. Tributary derives its full
-    // parameter list from librdkafka; these cover the consumer controls most
-    // commonly used with tributary_scan_topic.
     "auto.offset.reset",
     "enable.auto.commit",
     "enable.auto.offset.store",
@@ -222,8 +219,12 @@ impl KafkaScanState {
             client_config.set(key, value);
         }
 
-        // Preserve Tributary's scan behavior where these are enforced by the
-        // table function itself rather than left to caller configuration.
+        // This scanner uses explicit partition assignment rather than Kafka
+        // consumer-group subscription. Do not invent a group.id: librdkafka
+        // will otherwise initialize group coordination for a manually-assigned
+        // consumer, which can produce LOCAL__UNKNOWN_GROUP on brokers such as
+        // the Redpanda version used by CI. If a caller supplies group.id, keep
+        // it for Tributary-compatible configuration semantics.
         client_config
             .set("enable.auto.commit", "false")
             .set("enable.partition.eof", "true")
