@@ -273,7 +273,7 @@ fn write_rows(output: &mut DataChunkHandle, rows: &[Row]) -> Result<(), Box<dyn 
     }
 
     {
-        let list = output.list_vector(5);
+        let mut list = output.list_vector(5);
         let total_headers: usize = rows.iter().map(|row| row.headers.len()).sum();
         let mut offset = 0usize;
         for (i, row) in rows.iter().enumerate() {
