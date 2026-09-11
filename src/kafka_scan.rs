@@ -213,6 +213,12 @@ impl KafkaScanState {
     fn new(topic: &str, config: &HashMap<String, String>) -> Result<Self, Box<dyn Error>> {
         let mut client_config = ClientConfig::new();
         for (key, value) in config {
+            // Tributary consumes these settings itself for Schema Registry;
+            // they are not librdkafka properties and must not be passed to the
+            // Kafka client configuration.
+            if key.starts_with("schema.registry.") {
+                continue;
+            }
             client_config.set(key, value);
         }
 
