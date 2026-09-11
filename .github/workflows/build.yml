@@ -50,12 +50,12 @@ jobs:
           docker exec redpanda rpk cluster info
 
       - name: Install Kafka Python client
-        run: .venv/bin/python -m pip install kafka-python
+        run: configure/venv/bin/python -m pip install kafka-python
 
       - name: Seed Kafka and smoke test extension
         env:
           DUCKDB_EXTENSION: ${{ github.workspace }}/build/release/extension/tributary_rs/tributary_rs.duckdb_extension
-        run: .venv/bin/python scripts/kafka_smoke_test.py
+        run: configure/venv/bin/python scripts/kafka_smoke_test.py
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
