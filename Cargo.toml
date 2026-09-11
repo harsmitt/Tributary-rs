@@ -1,0 +1,11 @@
+[package]
+name = "tributary-rs"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+duckdb = { version = "1.10505.0", features = ["loadable-extension", "vtab"] }
+rdkafka = { version = "0.39", default-features = false, features = ["dynamic-linking"] }
