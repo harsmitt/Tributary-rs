@@ -1,0 +1,10 @@
+# name: test/sql/tributary_rs.test
+# description: verify Tributary Rust extension loads and registers its Kafka table function
+# group: [tributary_rs]
+
+require tributary_scan_topic
+
+query I
+SELECT 1;
+----
+1
