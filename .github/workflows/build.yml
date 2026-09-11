@@ -1,17 +1,65 @@
-name: Build Tributary Rust
+name: Build and test Tributary Rust
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential python3 python3-venv
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check
-        run: cargo check
+      - name: Configure
+        run: make configure
+
+      - name: Build release extension
+        run: make release
+
+      - name: Run DuckDB SQL tests
+        run: make test_release
+
+      - name: Start Kafka for integration test
+        run: |
+          docker run -d --name redpanda --network host \
+            docker.redpanda.com/redpandadata/redpanda:v25.2.2 \
+            redpanda start \
+            --mode dev-container \
+            --smp 1 \
+            --overprovisioned \
+            --node-id 0 \
+            --check=false \
+            --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+            --advertise-kafka-addr PLAINTEXT://127.0.0.1:9092
+          for i in $(seq 1 60); do
+            if docker exec redpanda rpk cluster info >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec redpanda rpk cluster info
+
+      - name: Install Kafka Python client
+        run: .venv/bin/python -m pip install kafka-python
+
+      - name: Seed Kafka and smoke test extension
+        env:
+          DUCKDB_EXTENSION: ${{ github.workspace }}/build/release/extension/tributary_rs/tributary_rs.duckdb_extension
+        run: .venv/bin/python scripts/kafka_smoke_test.py
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tributary_rs-linux-amd64-duckdb-v1.5.5
+          path: build/release/extension/tributary_rs/tributary_rs.duckdb_extension
+          if-no-files-found: error
