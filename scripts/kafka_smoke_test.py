@@ -60,7 +60,7 @@ rows = con.execute(
 assert rows == (3, 3, 3, 3), rows
 
 payloads = con.execute(
-    f"SELECT key, message FROM tributary_scan_topic('{TOPIC}', '{BROKERS}') ORDER BY offset"
+    f"SELECT key, message FROM tributary_scan_topic('{TOPIC}', '{BROKERS}') ORDER BY \"offset\""
 ).fetchall()
 assert payloads == [
     (b"key-0", b"payload-0"),
