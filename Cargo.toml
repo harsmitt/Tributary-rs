@@ -17,3 +17,4 @@ rdkafka = {
     default-features = false,
     features = ["cmake-build", "ssl"],
 }
+serde_json = "1"
