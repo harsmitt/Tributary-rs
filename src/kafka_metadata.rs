@@ -104,7 +104,7 @@ impl MetadataState {
             client_config.set(key, value);
         }
 
-        // Match upstream Tributary: use a producer client for metadata discovery.
+        // Match upstream Tributary: metadata is fetched through a producer client.
         let producer: BaseProducer = client_config.create()?;
         let metadata = producer.client().fetch_metadata(None, KAFKA_TIMEOUT)?;
 
@@ -125,6 +125,9 @@ impl MetadataState {
 fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &[TopicRow]) -> Result<(), Box<dyn Error>> {
     {
         let mut list = output.list_vector(0);
+        // Reserve first so the subsequent child/length operations cannot make
+        // DuckDB throw a C++ exception across the Rust FFI boundary.
+        list.try_reserve(brokers.len())?;
         let child = list.struct_child(brokers.len());
         {
             let mut ids = child.child(0, brokers.len());
@@ -140,18 +143,18 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
             let values = unsafe { ports.as_mut_slice_with_len::<i32>(brokers.len()) };
             for (slot, broker) in values.iter_mut().zip(brokers) { *slot = broker.port; }
         }
-        // There is one output row, so the outer list has one entry containing
-        // the complete broker array.
         list.set_entry(0, 0, brokers.len());
-        list.set_len(brokers.len());
+        list.try_set_len(brokers.len())?;
     }
     {
         let mut list = output.list_vector(1);
+        list.try_reserve(topics.len())?;
         let total_partitions: usize = topics.iter().map(|topic| topic.partitions.len()).sum();
         let child = list.struct_child(topics.len());
         let names = child.child(0, topics.len());
         let mut errors = child.child(1, topics.len());
         let mut partition_lists = child.list_vector_child(2);
+        partition_lists.try_reserve(total_partitions)?;
         let partition_child = partition_lists.struct_child(total_partitions);
         {
             let mut partition_ids = partition_child.child(0, total_partitions);
@@ -183,10 +186,9 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
             partition_lists.set_entry(i, partition_offset, length);
             partition_offset += length;
         }
-        partition_lists.set_len(total_partitions);
-        // There is one output row, whose topics list contains all topic entries.
+        partition_lists.try_set_len(total_partitions)?;
         list.set_entry(0, 0, topics.len());
-        list.set_len(topics.len());
+        list.try_set_len(topics.len())?;
     }
     Ok(())
 }
