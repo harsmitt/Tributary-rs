@@ -110,7 +110,7 @@ impl MetadataState {
         }).collect();
         let topics = metadata.topics().iter().map(|topic| TopicRow {
             name: topic.name().to_owned(),
-            error: topic.error().map(|error| error.to_string()),
+            error: topic.error().map(|error| format!("{:?}", error)),
             partitions: topic.partitions().iter().map(|partition| PartitionRow {
                 id: partition.id(), leader: partition.leader(),
             }).collect(),
@@ -123,13 +123,21 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
     {
         let mut list = output.list_vector(0);
         let child = list.struct_child(brokers.len());
-        let ids = child.child(0, brokers.len());
-        let hosts = child.child(1, brokers.len());
-        let ports = child.child(2, brokers.len());
-        for (i, broker) in brokers.iter().enumerate() {
-            ids.insert(i, broker.id); hosts.insert(i, broker.host.as_str()); ports.insert(i, broker.port);
-            list.set_entry(i, i, 1);
+        {
+            let mut ids = child.child(0, brokers.len());
+            let values = unsafe { ids.as_mut_slice_with_len::<i32>(brokers.len()) };
+            for (slot, broker) in values.iter_mut().zip(brokers) { *slot = broker.id; }
         }
+        {
+            let hosts = child.child(1, brokers.len());
+            for (i, broker) in brokers.iter().enumerate() { hosts.insert(i, broker.host.as_str()); }
+        }
+        {
+            let mut ports = child.child(2, brokers.len());
+            let values = unsafe { ports.as_mut_slice_with_len::<i32>(brokers.len()) };
+            for (slot, broker) in values.iter_mut().zip(brokers) { *slot = broker.port; }
+        }
+        for (i, _) in brokers.iter().enumerate() { list.set_entry(i, i, 1); }
         list.set_len(brokers.len());
     }
     {
@@ -140,19 +148,34 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
         let errors = child.child(1, topics.len());
         let mut partition_lists = child.list_vector_child(2);
         let partition_child = partition_lists.struct_child(total_partitions);
-        let partition_ids = partition_child.child(0, total_partitions);
-        let partition_leaders = partition_child.child(1, total_partitions);
+        {
+            let mut partition_ids = partition_child.child(0, total_partitions);
+            let values = unsafe { partition_ids.as_mut_slice_with_len::<i32>(total_partitions) };
+            let mut index = 0usize;
+            for topic in topics {
+                for partition in &topic.partitions {
+                    values[index] = partition.id;
+                    index += 1;
+                }
+            }
+        }
+        {
+            let mut partition_leaders = partition_child.child(1, total_partitions);
+            let values = unsafe { partition_leaders.as_mut_slice_with_len::<i32>(total_partitions) };
+            let mut index = 0usize;
+            for topic in topics {
+                for partition in &topic.partitions {
+                    values[index] = partition.leader;
+                    index += 1;
+                }
+            }
+        }
         let mut partition_offset = 0usize;
         for (i, topic) in topics.iter().enumerate() {
             names.insert(i, topic.name.as_str());
             match &topic.error { Some(error) => errors.insert(i, error.as_str()), None => errors.set_null(i) }
             let length = topic.partitions.len();
             partition_lists.set_entry(i, partition_offset, length);
-            for (j, partition) in topic.partitions.iter().enumerate() {
-                let index = partition_offset + j;
-                partition_ids.insert(index, partition.id);
-                partition_leaders.insert(index, partition.leader);
-            }
             partition_offset += length;
         }
         partition_lists.set_len(total_partitions);
