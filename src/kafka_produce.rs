@@ -5,8 +5,8 @@ use duckdb::{
 };
 use rdkafka::{
     client::ClientContext,
-    config::{ClientConfig, FromClientConfigAndContext},
-    message::DeliveryResult,
+    config::ClientConfig,
+    message::{DeliveryResult, Message},
     producer::{BaseProducer, BaseRecord, Producer, ProducerContext},
 };
 use std::{
@@ -162,8 +162,10 @@ impl VTab for KafkaProduce {
             DeliveryState::Delivered { partition, offset } => {
                 let mut topic = output.flat_vector(0);
                 topic.insert(0, bind.topic.as_str());
-                output.flat_vector(1).as_mut_slice_with_len::<i32>(1)[0] = partition;
-                output.flat_vector(2).as_mut_slice_with_len::<i64>(1)[0] = offset;
+                unsafe {
+                    output.flat_vector(1).as_mut_slice_with_len::<i32>(1)[0] = partition;
+                    output.flat_vector(2).as_mut_slice_with_len::<i64>(1)[0] = offset;
+                }
                 output.set_len(1);
                 Ok(())
             }
