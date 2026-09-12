@@ -6,9 +6,8 @@ use duckdb::{
 use rdkafka::{
     client::ClientContext,
     config::ClientConfig,
-    message::{DeliveryResult, Message},
+    message::{DeliveryResult, Header, Message, OwnedHeaders},
     producer::{BaseProducer, BaseRecord, Producer, ProducerContext},
-    message::{Header, OwnedHeaders},
 };
 use std::{
     collections::HashMap,
@@ -130,19 +129,11 @@ impl VTab for KafkaProduce {
             return Err("bootstrap.servers must not be empty".into());
         }
 
-        Ok(ProduceBind {
-            topic,
-            message,
-            key,
-            headers,
-            config,
-        })
+        Ok(ProduceBind { topic, message, key, headers, config })
     }
 
     fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
-        Ok(ProduceInit {
-            state: Mutex::new(None),
-        })
+        Ok(ProduceInit { state: Mutex::new(None) })
     }
 
     fn func(
@@ -151,10 +142,7 @@ impl VTab for KafkaProduce {
     ) -> Result<(), Box<dyn Error>> {
         let bind = func.get_bind_data();
         let init = func.get_init_data();
-        let mut guard = init
-            .state
-            .lock()
-            .map_err(|_| "Kafka producer state mutex was poisoned")?;
+        let mut guard = init.state.lock().map_err(|_| "Kafka producer state mutex was poisoned")?;
 
         if guard.is_none() {
             let delivery_result = produce(
@@ -164,10 +152,7 @@ impl VTab for KafkaProduce {
                 bind.headers.as_ref(),
                 &bind.config,
             )?;
-            *guard = Some(ProduceState {
-                result: Some(delivery_result),
-                emitted: false,
-            });
+            *guard = Some(ProduceState { result: Some(delivery_result), emitted: false });
         }
 
         let state = guard.as_mut().expect("producer state initialized above");
@@ -179,7 +164,7 @@ impl VTab for KafkaProduce {
 
         match state.result.take().expect("producer result initialized above") {
             DeliveryState::Delivered { partition, offset } => {
-                let topic = output.flat_vector(0);
+                let mut topic = output.flat_vector(0);
                 topic.insert(0, bind.topic.as_str());
                 unsafe {
                     output.flat_vector(1).as_mut_slice_with_len::<i32>(1)[0] = partition;
@@ -199,12 +184,10 @@ impl VTab for KafkaProduce {
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         let mut parameters = vec![
             ("key".to_owned(), LogicalTypeId::Varchar.into()),
-            ("headers".to_owned(), LogicalTypeId::JSON.into()),
+            ("headers".to_owned(), LogicalTypeId::Varchar.into()),
         ];
         parameters.extend(
-            TRIBUTARY_CONFIG_KEYS
-                .iter()
-                .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())),
+            TRIBUTARY_CONFIG_KEYS.iter().map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())),
         );
         Some(parameters)
     }
@@ -227,15 +210,11 @@ fn produce(
 
     let delivery_context = DeliveryContext::default();
     let result_handle = Arc::clone(&delivery_context.result);
-    let producer: BaseProducer<DeliveryContext> =
-        client_config.create_with_context(delivery_context)?;
+    let producer: BaseProducer<DeliveryContext> = client_config.create_with_context(delivery_context)?;
 
     let owned_headers = headers.map(|values| {
         values.iter().fold(OwnedHeaders::new(), |headers, (key, value)| {
-            headers.insert(Header {
-                key,
-                value: Some(value.as_bytes()),
-            })
+            headers.insert(Header { key, value: Some(value.as_bytes()) })
         })
     });
 
@@ -246,12 +225,8 @@ fn produce(
         (None, None) => BaseRecord::to(topic).payload(message),
     };
 
-    producer
-        .send(record)
-        .map_err(|(error, _)| format!("failed to enqueue Kafka message: {error}"))?;
-    producer
-        .flush(KAFKA_TIMEOUT)
-        .map_err(|error| format!("Kafka producer flush failed: {error}"))?;
+    producer.send(record).map_err(|(error, _)| format!("failed to enqueue Kafka message: {error}"))?;
+    producer.flush(KAFKA_TIMEOUT);
 
     result_handle
         .lock()
