@@ -7,6 +7,21 @@ use rdkafka::{config::ClientConfig, consumer::{BaseConsumer, Consumer}};
 use std::{collections::HashMap, error::Error, sync::Mutex, time::Duration};
 
 const KAFKA_TIMEOUT: Duration = Duration::from_secs(10);
+const TRIBUTARY_CONFIG_KEYS: &[&str] = &[
+    "bootstrap.servers", "security.protocol", "sasl.mechanism", "sasl.username", "sasl.password",
+    "ssl.ca.location", "ssl.certificate.location", "ssl.key.location", "ssl.key.password",
+    "group.id", "client.id", "transactional.id", "schema.registry.url",
+    "schema.registry.basic.auth.user.info", "debug", "sasl.oauthbearer.client.id",
+    "sasl.oauthbearer.client.secret", "sasl.oauthbearer.method", "sasl.oauthbearer.token.endpoint.url",
+    "auto.offset.reset", "enable.auto.commit", "enable.auto.offset.store", "enable.partition.eof",
+    "fetch.min.bytes", "fetch.wait.max.ms", "fetch.max.bytes", "max.partition.fetch.bytes",
+    "max.poll.interval.ms", "session.timeout.ms", "heartbeat.interval.ms", "socket.timeout.ms",
+    "socket.connection.setup.timeout.ms", "socket.keepalive.enable", "connections.max.idle.ms",
+    "receive.message.max.bytes", "queued.min.messages", "queued.max.messages.kbytes",
+    "fetch.error.backoff.ms", "retry.backoff.ms", "retry.backoff.max.ms", "reconnect.backoff.ms",
+    "reconnect.backoff.max.ms", "allow.auto.create.topics", "partition.assignment.strategy",
+    "check.crcs", "isolation.level",
+];
 
 #[derive(Debug)]
 struct MetadataBind { config: HashMap<String, String> }
@@ -43,7 +58,7 @@ impl VTab for KafkaMetadata {
             return Err("tributary_metadata does not accept positional arguments; Kafka settings use named parameters".into());
         }
         let mut config = HashMap::new();
-        for &key in crate::kafka_scan::TRIBUTARY_CONFIG_KEYS {
+        for &key in TRIBUTARY_CONFIG_KEYS {
             if let Some(value) = bind.get_named_parameter(key) { config.insert(key.to_owned(), value.to_string()); }
         }
         if !config.contains_key("bootstrap.servers") {
@@ -74,8 +89,7 @@ impl VTab for KafkaMetadata {
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> { Some(Vec::new()) }
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(crate::kafka_scan::TRIBUTARY_CONFIG_KEYS.iter()
-            .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())).collect())
+        Some(TRIBUTARY_CONFIG_KEYS.iter().map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())).collect())
     }
 }
 
