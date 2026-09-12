@@ -92,13 +92,10 @@ impl VTab for KafkaProduce {
         bind.add_result_column("partition", LogicalTypeId::Integer.into());
         bind.add_result_column("offset", LogicalTypeId::Bigint.into());
 
-        match bind.get_parameter_count() {
-            2 | 3 => {}
-            _ => {
-                return Err(
-                    "tributary_produce requires topic and message, with an optional key; Kafka settings use named parameters".into(),
-                )
-            }
+        if bind.get_parameter_count() != 2 {
+            return Err(
+                "tributary_produce requires two positional arguments: topic and message; Kafka settings and the optional key use named parameters".into(),
+            );
         }
 
         let topic = bind.get_parameter(0).to_string();
@@ -106,11 +103,7 @@ impl VTab for KafkaProduce {
             return Err("topic must not be empty".into());
         }
         let message = bind.get_parameter(1).to_string();
-        let key = if bind.get_parameter_count() == 3 {
-            Some(bind.get_parameter(2).to_string())
-        } else {
-            None
-        };
+        let key = bind.get_named_parameter("key").map(|value| value.to_string());
 
         let mut config = HashMap::new();
         for &name in TRIBUTARY_CONFIG_KEYS {
@@ -179,20 +172,17 @@ impl VTab for KafkaProduce {
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![
-            LogicalTypeId::Varchar.into(),
-            LogicalTypeId::Varchar.into(),
-            LogicalTypeId::Varchar.into(),
-        ])
+        Some(vec![LogicalTypeId::Varchar.into(), LogicalTypeId::Varchar.into()])
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(
+        let mut parameters = vec![("key".to_owned(), LogicalTypeId::Varchar.into())];
+        parameters.extend(
             TRIBUTARY_CONFIG_KEYS
                 .iter()
-                .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into()))
-                .collect(),
-        )
+                .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())),
+        );
+        Some(parameters)
     }
 }
 
