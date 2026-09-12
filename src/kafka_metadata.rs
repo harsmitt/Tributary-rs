@@ -24,7 +24,7 @@ const TRIBUTARY_CONFIG_KEYS: &[&str] = &[
 ];
 
 #[derive(Debug)]
-struct MetadataBind { config: HashMap<String, String> }
+pub struct MetadataBind { config: HashMap<String, String> }
 pub struct MetadataInit { state: Mutex<Option<MetadataState>> }
 struct MetadataState { brokers: Vec<BrokerRow>, topics: Vec<TopicRow>, emitted: bool }
 #[derive(Debug)] struct BrokerRow { id: i32, host: String, port: i32 }
