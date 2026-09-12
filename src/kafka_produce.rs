@@ -8,6 +8,7 @@ use rdkafka::{
     config::ClientConfig,
     message::{DeliveryResult, Message},
     producer::{BaseProducer, BaseRecord, Producer, ProducerContext},
+    message::{Header, OwnedHeaders},
 };
 use std::{
     collections::HashMap,
@@ -39,6 +40,7 @@ pub struct ProduceBind {
     topic: String,
     message: String,
     key: Option<String>,
+    headers: Option<HashMap<String, String>>,
     config: HashMap<String, String>,
 }
 
@@ -94,7 +96,7 @@ impl VTab for KafkaProduce {
 
         if bind.get_parameter_count() != 2 {
             return Err(
-                "tributary_produce requires two positional arguments: topic and message; Kafka settings and the optional key use named parameters".into(),
+                "tributary_produce requires two positional arguments: topic and message; Kafka settings, key, and headers use named parameters".into(),
             );
         }
 
@@ -104,6 +106,16 @@ impl VTab for KafkaProduce {
         }
         let message = bind.get_parameter(1).to_string();
         let key = bind.get_named_parameter("key").map(|value| value.to_string());
+        let headers = match bind.get_named_parameter("headers") {
+            Some(value) if value.is_null() => None,
+            Some(value) => {
+                let text = value.to_string();
+                let parsed: HashMap<String, String> = serde_json::from_str(&text)
+                    .map_err(|error| format!("headers must be a JSON object with string values: {error}"))?;
+                Some(parsed)
+            }
+            None => None,
+        };
 
         let mut config = HashMap::new();
         for &name in TRIBUTARY_CONFIG_KEYS {
@@ -122,6 +134,7 @@ impl VTab for KafkaProduce {
             topic,
             message,
             key,
+            headers,
             config,
         })
     }
@@ -144,7 +157,13 @@ impl VTab for KafkaProduce {
             .map_err(|_| "Kafka producer state mutex was poisoned")?;
 
         if guard.is_none() {
-            let delivery_result = produce(&bind.topic, &bind.message, bind.key.as_deref(), &bind.config)?;
+            let delivery_result = produce(
+                &bind.topic,
+                &bind.message,
+                bind.key.as_deref(),
+                bind.headers.as_ref(),
+                &bind.config,
+            )?;
             *guard = Some(ProduceState {
                 result: Some(delivery_result),
                 emitted: false,
@@ -160,7 +179,7 @@ impl VTab for KafkaProduce {
 
         match state.result.take().expect("producer result initialized above") {
             DeliveryState::Delivered { partition, offset } => {
-                let mut topic = output.flat_vector(0);
+                let topic = output.flat_vector(0);
                 topic.insert(0, bind.topic.as_str());
                 unsafe {
                     output.flat_vector(1).as_mut_slice_with_len::<i32>(1)[0] = partition;
@@ -178,7 +197,10 @@ impl VTab for KafkaProduce {
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        let mut parameters = vec![("key".to_owned(), LogicalTypeId::Varchar.into())];
+        let mut parameters = vec![
+            ("key".to_owned(), LogicalTypeId::Varchar.into()),
+            ("headers".to_owned(), LogicalTypeId::JSON.into()),
+        ];
         parameters.extend(
             TRIBUTARY_CONFIG_KEYS
                 .iter()
@@ -192,6 +214,7 @@ fn produce(
     topic: &str,
     message: &str,
     key: Option<&str>,
+    headers: Option<&HashMap<String, String>>,
     config: &HashMap<String, String>,
 ) -> Result<DeliveryState, Box<dyn Error>> {
     let mut client_config = ClientConfig::new();
@@ -207,9 +230,20 @@ fn produce(
     let producer: BaseProducer<DeliveryContext> =
         client_config.create_with_context(delivery_context)?;
 
-    let record = match key {
-        Some(key) => BaseRecord::to(topic).payload(message).key(key),
-        None => BaseRecord::to(topic).payload(message),
+    let owned_headers = headers.map(|values| {
+        values.iter().fold(OwnedHeaders::new(), |headers, (key, value)| {
+            headers.insert(Header {
+                key,
+                value: Some(value.as_bytes()),
+            })
+        })
+    });
+
+    let record = match (key, owned_headers) {
+        (Some(key), Some(headers)) => BaseRecord::to(topic).payload(message).key(key).headers(headers),
+        (Some(key), None) => BaseRecord::to(topic).payload(message).key(key),
+        (None, Some(headers)) => BaseRecord::to(topic).payload(message).headers(headers),
+        (None, None) => BaseRecord::to(topic).payload(message),
     };
 
     producer
