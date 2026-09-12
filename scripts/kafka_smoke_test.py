@@ -54,7 +54,9 @@ con.execute(f"LOAD '{EXTENSION}'")
 
 produce_result = con.execute(
     'SELECT * FROM tributary_produce('
-    f"'{PRODUCE_TOPIC}', 'producer-payload', \"bootstrap.servers\" := '{BROKERS}', key := 'producer-key')"
+    f"'{PRODUCE_TOPIC}', '{{\"requestId\":\"req-123\",\"status\":\"NEW\"}}', "
+    f'"bootstrap.servers" := \'{BROKERS}\', key := \'producer-key\', '
+    "headers := '{\"trace-id\":\"producer-trace\",\"source\":\"duckdb\"}'::JSON)"
 ).fetchone()
 assert produce_result[0] == PRODUCE_TOPIC, produce_result
 assert produce_result[1] == 0, produce_result
@@ -85,9 +87,15 @@ assert payloads == [
 ], payloads
 
 produced = con.execute(
-    f'SELECT key, message FROM {"tributary_scan_topic"}(\'{PRODUCE_TOPIC}\', "bootstrap.servers" := \'{BROKERS}\')'
+    f'SELECT key, message, headers FROM {"tributary_scan_topic"}(\'{PRODUCE_TOPIC}\', "bootstrap.servers" := \'{BROKERS}\')'
 ).fetchall()
-assert produced == [(b"producer-key", b"producer-payload")], produced
+assert len(produced) == 1, produced
+assert produced[0][0:2] == (b"producer-key", b'{"requestId":"req-123","status":"NEW"}'), produced
+produced_headers = {header["key"]: header["value"] for header in produced[0][2]}
+assert produced_headers == {
+    "trace-id": b"producer-trace",
+    "source": b"duckdb",
+}, produced_headers
 
 metadata = con.execute(
     'SELECT brokers, topics FROM tributary_metadata('
@@ -112,6 +120,7 @@ assert all(p["leader"] >= 0 for p in topic_map[METADATA_TOPIC]["partitions"]), t
 print("SUCCESS: Tributary Rust extension consumed 3 Kafka records")
 print("SUCCESS: duplicate header keys and NULL header values preserved")
 print("SUCCESS: raw key/message bytes preserved")
-print("SUCCESS: tributary_produce delivered a keyed Kafka message")
+print("SUCCESS: tributary_produce delivered a keyed Kafka message with JSON headers")
+print("SUCCESS: producer JSON payload and headers round-tripped through Kafka")
 print("SUCCESS: Tributary-compatible bootstrap.servers named parameter works")
 print("SUCCESS: tributary_metadata returned brokers, topics, and partitions")
