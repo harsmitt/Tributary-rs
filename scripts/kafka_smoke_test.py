@@ -7,6 +7,7 @@ import duckdb
 
 BROKERS = "127.0.0.1:9092"
 TOPIC = "tributary_rs_smoke"
+PRODUCE_TOPIC = "tributary_rs_produce_smoke"
 METADATA_TOPIC = "tributary_rs_metadata_smoke"
 EXTENSION = os.environ["DUCKDB_EXTENSION"]
 
@@ -28,6 +29,7 @@ admin = KafkaAdminClient(bootstrap_servers=BROKERS)
 try:
     admin.create_topics([
         NewTopic(TOPIC, num_partitions=1, replication_factor=1),
+        NewTopic(PRODUCE_TOPIC, num_partitions=1, replication_factor=1),
         NewTopic(METADATA_TOPIC, num_partitions=2, replication_factor=1),
     ])
 except Exception as exc:
@@ -49,6 +51,14 @@ producer.flush(10)
 
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 con.execute(f"LOAD '{EXTENSION}'")
+
+produce_result = con.execute(
+    'SELECT * FROM tributary_produce('
+    f"'{PRODUCE_TOPIC}', 'producer-payload', \"bootstrap.servers\" := '{BROKERS}', key := 'producer-key')"
+).fetchone()
+assert produce_result[0] == PRODUCE_TOPIC, produce_result
+assert produce_result[1] == 0, produce_result
+assert produce_result[2] >= 0, produce_result
 
 scan = f"tributary_scan_topic('{TOPIC}', \"bootstrap.servers\" := '{BROKERS}')"
 
@@ -74,6 +84,11 @@ assert payloads == [
     (b"key-2", b"payload-2"),
 ], payloads
 
+produced = con.execute(
+    f'SELECT key, message FROM {"tributary_scan_topic"}(\'{PRODUCE_TOPIC}\', "bootstrap.servers" := \'{BROKERS}\')'
+).fetchall()
+assert produced == [(b"producer-key", b"producer-payload")], produced
+
 metadata = con.execute(
     'SELECT brokers, topics FROM tributary_metadata('
     f'"bootstrap.servers" := \'{BROKERS}\')'
@@ -84,12 +99,12 @@ assert len(brokers) == 1, brokers
 assert brokers[0]["host"] == "127.0.0.1", brokers
 assert brokers[0]["port"] == 9092, brokers
 
-# The metadata request must return the topics visible to the broker and their
-# partition information, rather than an empty topic list.
 topic_map = {topic["name"]: topic for topic in topics}
 assert TOPIC in topic_map, topic_map
+assert PRODUCE_TOPIC in topic_map, topic_map
 assert METADATA_TOPIC in topic_map, topic_map
 assert topic_map[TOPIC]["error"] is None, topic_map[TOPIC]
+assert topic_map[PRODUCE_TOPIC]["error"] is None, topic_map[PRODUCE_TOPIC]
 assert topic_map[METADATA_TOPIC]["error"] is None, topic_map[METADATA_TOPIC]
 assert [p["id"] for p in topic_map[METADATA_TOPIC]["partitions"]] == [0, 1], topic_map[METADATA_TOPIC]
 assert all(p["leader"] >= 0 for p in topic_map[METADATA_TOPIC]["partitions"]), topic_map[METADATA_TOPIC]
@@ -97,5 +112,6 @@ assert all(p["leader"] >= 0 for p in topic_map[METADATA_TOPIC]["partitions"]), t
 print("SUCCESS: Tributary Rust extension consumed 3 Kafka records")
 print("SUCCESS: duplicate header keys and NULL header values preserved")
 print("SUCCESS: raw key/message bytes preserved")
+print("SUCCESS: tributary_produce delivered a keyed Kafka message")
 print("SUCCESS: Tributary-compatible bootstrap.servers named parameter works")
 print("SUCCESS: tributary_metadata returned brokers, topics, and partitions")
