@@ -7,6 +7,7 @@ import duckdb
 
 BROKERS = "127.0.0.1:9092"
 TOPIC = "tributary_rs_smoke"
+METADATA_TOPIC = "tributary_rs_metadata_smoke"
 EXTENSION = os.environ["DUCKDB_EXTENSION"]
 
 
@@ -25,7 +26,10 @@ wait_for_kafka()
 
 admin = KafkaAdminClient(bootstrap_servers=BROKERS)
 try:
-    admin.create_topics([NewTopic(TOPIC, num_partitions=1, replication_factor=1)])
+    admin.create_topics([
+        NewTopic(TOPIC, num_partitions=1, replication_factor=1),
+        NewTopic(METADATA_TOPIC, num_partitions=2, replication_factor=1),
+    ])
 except Exception as exc:
     if "TopicAlreadyExists" not in str(exc):
         raise
@@ -70,7 +74,28 @@ assert payloads == [
     (b"key-2", b"payload-2"),
 ], payloads
 
+metadata = con.execute(
+    'SELECT brokers, topics FROM tributary_metadata('
+    f'"bootstrap.servers" := \'{BROKERS}\')'
+).fetchone()
+
+brokers, topics = metadata
+assert len(brokers) == 1, brokers
+assert brokers[0]["host"] == "127.0.0.1", brokers
+assert brokers[0]["port"] == 9092, brokers
+
+# The metadata request must return the topics visible to the broker and their
+# partition information, rather than an empty topic list.
+topic_map = {topic["name"]: topic for topic in topics}
+assert TOPIC in topic_map, topic_map
+assert METADATA_TOPIC in topic_map, topic_map
+assert topic_map[TOPIC]["error"] is None, topic_map[TOPIC]
+assert topic_map[METADATA_TOPIC]["error"] is None, topic_map[METADATA_TOPIC]
+assert [p["id"] for p in topic_map[METADATA_TOPIC]["partitions"]] == [0, 1], topic_map[METADATA_TOPIC]
+assert all(p["leader"] >= 0 for p in topic_map[METADATA_TOPIC]["partitions"]), topic_map[METADATA_TOPIC]
+
 print("SUCCESS: Tributary Rust extension consumed 3 Kafka records")
 print("SUCCESS: duplicate header keys and NULL header values preserved")
 print("SUCCESS: raw key/message bytes preserved")
 print("SUCCESS: Tributary-compatible bootstrap.servers named parameter works")
+print("SUCCESS: tributary_metadata returned brokers, topics, and partitions")
