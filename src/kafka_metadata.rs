@@ -1,0 +1,148 @@
+use duckdb::{
+    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
+    vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
+    Result,
+};
+use rdkafka::{config::ClientConfig, consumer::{BaseConsumer, Consumer}};
+use std::{collections::HashMap, error::Error, sync::Mutex, time::Duration};
+
+const KAFKA_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug)]
+struct MetadataBind { config: HashMap<String, String> }
+pub struct MetadataInit { state: Mutex<Option<MetadataState>> }
+struct MetadataState { brokers: Vec<BrokerRow>, topics: Vec<TopicRow>, emitted: bool }
+#[derive(Debug)] struct BrokerRow { id: i32, host: String, port: i32 }
+#[derive(Debug)] struct TopicRow { name: String, error: Option<String>, partitions: Vec<PartitionRow> }
+#[derive(Debug)] struct PartitionRow { id: i32, leader: i32 }
+pub struct KafkaMetadata;
+
+impl VTab for KafkaMetadata {
+    type BindData = MetadataBind;
+    type InitData = MetadataInit;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        let partition_type = LogicalTypeHandle::struct_type(&[
+            ("id", LogicalTypeId::Integer.into()),
+            ("leader", LogicalTypeId::Integer.into()),
+        ]);
+        let topic_type = LogicalTypeHandle::struct_type(&[
+            ("name", LogicalTypeId::Varchar.into()),
+            ("error", LogicalTypeId::Varchar.into()),
+            ("partitions", LogicalTypeHandle::list(&partition_type)),
+        ]);
+        let broker_type = LogicalTypeHandle::struct_type(&[
+            ("id", LogicalTypeId::Integer.into()),
+            ("host", LogicalTypeId::Varchar.into()),
+            ("port", LogicalTypeId::Integer.into()),
+        ]);
+        bind.add_result_column("brokers", LogicalTypeHandle::list(&broker_type));
+        bind.add_result_column("topics", LogicalTypeHandle::list(&topic_type));
+
+        if bind.get_parameter_count() != 0 {
+            return Err("tributary_metadata does not accept positional arguments; Kafka settings use named parameters".into());
+        }
+        let mut config = HashMap::new();
+        for &key in crate::kafka_scan::TRIBUTARY_CONFIG_KEYS {
+            if let Some(value) = bind.get_named_parameter(key) { config.insert(key.to_owned(), value.to_string()); }
+        }
+        if !config.contains_key("bootstrap.servers") {
+            return Err("tributary_metadata requires named parameter \"bootstrap.servers\"".into());
+        }
+        if config.get("bootstrap.servers").map(String::is_empty).unwrap_or(true) {
+            return Err("bootstrap.servers must not be empty".into());
+        }
+        Ok(MetadataBind { config })
+    }
+
+    fn init(_init: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        Ok(MetadataInit { state: Mutex::new(None) })
+    }
+
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        let bind = func.get_bind_data();
+        let init = func.get_init_data();
+        let mut guard = init.state.lock().map_err(|_| "Kafka metadata state mutex was poisoned")?;
+        if guard.is_none() { *guard = Some(MetadataState::fetch(&bind.config)?); }
+        let state = guard.as_mut().expect("metadata state initialized above");
+        if state.emitted { output.set_len(0); return Ok(()); }
+        write_metadata(output, &state.brokers, &state.topics)?;
+        output.set_len(1);
+        state.emitted = true;
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> { Some(Vec::new()) }
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(crate::kafka_scan::TRIBUTARY_CONFIG_KEYS.iter()
+            .map(|key| ((*key).to_owned(), LogicalTypeId::Varchar.into())).collect())
+    }
+}
+
+impl MetadataState {
+    fn fetch(config: &HashMap<String, String>) -> Result<Self, Box<dyn Error>> {
+        let mut client_config = ClientConfig::new();
+        for (key, value) in config {
+            if key.starts_with("schema.registry.") { continue; }
+            client_config.set(key, value);
+        }
+        if !config.contains_key("group.id") {
+            client_config.set("group.id", "tributary-rs-metadata");
+        }
+        let consumer: BaseConsumer = client_config.create()?;
+        let metadata = consumer.fetch_metadata(None, KAFKA_TIMEOUT)?;
+        let brokers = metadata.brokers().iter().map(|broker| BrokerRow {
+            id: broker.id(), host: broker.host().to_owned(), port: broker.port(),
+        }).collect();
+        let topics = metadata.topics().iter().map(|topic| TopicRow {
+            name: topic.name().to_owned(),
+            error: topic.error().map(|error| error.to_string()),
+            partitions: topic.partitions().iter().map(|partition| PartitionRow {
+                id: partition.id(), leader: partition.leader(),
+            }).collect(),
+        }).collect();
+        Ok(Self { brokers, topics, emitted: false })
+    }
+}
+
+fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &[TopicRow]) -> Result<(), Box<dyn Error>> {
+    {
+        let mut list = output.list_vector(0);
+        let child = list.struct_child(brokers.len());
+        let ids = child.child(0, brokers.len());
+        let hosts = child.child(1, brokers.len());
+        let ports = child.child(2, brokers.len());
+        for (i, broker) in brokers.iter().enumerate() {
+            ids.insert(i, broker.id); hosts.insert(i, broker.host.as_str()); ports.insert(i, broker.port);
+            list.set_entry(i, i, 1);
+        }
+        list.set_len(brokers.len());
+    }
+    {
+        let mut list = output.list_vector(1);
+        let total_partitions: usize = topics.iter().map(|topic| topic.partitions.len()).sum();
+        let child = list.struct_child(topics.len());
+        let names = child.child(0, topics.len());
+        let errors = child.child(1, topics.len());
+        let mut partition_lists = child.list_vector_child(2);
+        let partition_child = partition_lists.struct_child(total_partitions);
+        let partition_ids = partition_child.child(0, total_partitions);
+        let partition_leaders = partition_child.child(1, total_partitions);
+        let mut partition_offset = 0usize;
+        for (i, topic) in topics.iter().enumerate() {
+            names.insert(i, topic.name.as_str());
+            match &topic.error { Some(error) => errors.insert(i, error.as_str()), None => errors.set_null(i) }
+            let length = topic.partitions.len();
+            partition_lists.set_entry(i, partition_offset, length);
+            for (j, partition) in topic.partitions.iter().enumerate() {
+                let index = partition_offset + j;
+                partition_ids.insert(index, partition.id);
+                partition_leaders.insert(index, partition.leader);
+            }
+            partition_offset += length;
+        }
+        partition_lists.set_len(total_partitions);
+        list.set_len(topics.len());
+    }
+    Ok(())
+}
