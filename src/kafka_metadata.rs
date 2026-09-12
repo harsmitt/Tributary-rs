@@ -121,7 +121,7 @@ impl MetadataState {
 
 fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &[TopicRow]) -> Result<(), Box<dyn Error>> {
     {
-        let mut list = output.list_vector(0);
+        let list = output.list_vector(0);
         let child = list.struct_child(brokers.len());
         {
             let mut ids = child.child(0, brokers.len());
@@ -141,11 +141,11 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
         list.set_len(brokers.len());
     }
     {
-        let mut list = output.list_vector(1);
+        let list = output.list_vector(1);
         let total_partitions: usize = topics.iter().map(|topic| topic.partitions.len()).sum();
         let child = list.struct_child(topics.len());
         let names = child.child(0, topics.len());
-        let errors = child.child(1, topics.len());
+        let mut errors = child.child(1, topics.len());
         let mut partition_lists = child.list_vector_child(2);
         let partition_child = partition_lists.struct_child(total_partitions);
         {
