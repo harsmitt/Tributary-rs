@@ -105,9 +105,6 @@ impl MetadataState {
         }
 
         // Match upstream Tributary: use a producer client for metadata discovery.
-        // Producer metadata requests are deliberately used here because metadata(None)
-        // must request the full cluster/topic metadata rather than relying on the
-        // consumer's local topic state.
         let producer: BaseProducer = client_config.create()?;
         let metadata = producer.client().fetch_metadata(None, KAFKA_TIMEOUT)?;
 
@@ -143,7 +140,9 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
             let values = unsafe { ports.as_mut_slice_with_len::<i32>(brokers.len()) };
             for (slot, broker) in values.iter_mut().zip(brokers) { *slot = broker.port; }
         }
-        for (i, _) in brokers.iter().enumerate() { list.set_entry(i, i, 1); }
+        // There is one output row, so the outer list has one entry containing
+        // the complete broker array.
+        list.set_entry(0, 0, brokers.len());
         list.set_len(brokers.len());
     }
     {
@@ -185,6 +184,8 @@ fn write_metadata(output: &mut DataChunkHandle, brokers: &[BrokerRow], topics: &
             partition_offset += length;
         }
         partition_lists.set_len(total_partitions);
+        // There is one output row, whose topics list contains all topic entries.
+        list.set_entry(0, 0, topics.len());
         list.set_len(topics.len());
     }
     Ok(())
