@@ -3,7 +3,10 @@ use duckdb::{
     vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
     Result,
 };
-use rdkafka::{config::ClientConfig, consumer::{BaseConsumer, Consumer}};
+use rdkafka::{
+    config::ClientConfig,
+    producer::{BaseProducer, Producer},
+};
 use std::{collections::HashMap, error::Error, sync::Mutex, time::Duration};
 
 const KAFKA_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,11 +103,14 @@ impl MetadataState {
             if key.starts_with("schema.registry.") { continue; }
             client_config.set(key, value);
         }
-        if !config.contains_key("group.id") {
-            client_config.set("group.id", "tributary-rs-metadata");
-        }
-        let consumer: BaseConsumer = client_config.create()?;
-        let metadata = consumer.fetch_metadata(None, KAFKA_TIMEOUT)?;
+
+        // Match upstream Tributary: use a producer client for metadata discovery.
+        // Producer metadata requests are deliberately used here because metadata(None)
+        // must request the full cluster/topic metadata rather than relying on the
+        // consumer's local topic state.
+        let producer: BaseProducer = client_config.create()?;
+        let metadata = producer.client().fetch_metadata(None, KAFKA_TIMEOUT)?;
+
         let brokers = metadata.brokers().iter().map(|broker| BrokerRow {
             id: broker.id(), host: broker.host().to_owned(), port: broker.port(),
         }).collect();
